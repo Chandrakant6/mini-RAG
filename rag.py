@@ -8,7 +8,7 @@ import subprocess
 
 DATA_DIR = "data"
 TOP_K = 3
-MODEL = "mistral"
+MODEL = "phi"
 
 
 def load_docs(data_dir):
