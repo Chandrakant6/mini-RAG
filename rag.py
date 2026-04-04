@@ -1,15 +1,21 @@
 import numpy as np 
-from sklearn.feature_extraction.text import TfidfVectorizer
-from sklearn.metrics.pairwise import cosine_similarity
+from sentence_transformers import SentenceTransformer
 
 import os 
 import subprocess
 
 
 DATA_DIR = "data"
-TOP_K = 3
-MODEL = "phi"
+TOP_K = 2
 
+OLLAMA_MODEL = "phi"
+ST_MODEL = "all-MiniLM-L6-v2"
+
+CHUNK_SIZE = 125
+OVERLAP = 25
+
+
+embedder = SentenceTransformer(ST_MODEL)
 
 def load_docs(data_dir):
     texts = []
@@ -19,30 +25,26 @@ def load_docs(data_dir):
                 texts.append(f.read())
     return texts
 
-def chunk_text(text, chunk_size=250, overlap=50):
+def chunk_text(text):
     words = text.split()
     chunks = []
     i = 0
     while i < len(words):
-        chunk = words[i:i+chunk_size]
+        chunk = words[i:i+CHUNK_SIZE]
         chunks.append(" ".join(chunk))
-        i += chunk_size - overlap
+        i += CHUNK_SIZE - OVERLAP
     return chunks
 
-def build_index(texts):
-    chunks = []
-    for t in texts:
-        chunks.extend(chunk_text(t))
+def build_index(chunks):
+    X = embedder.encode(texts, convert_to_numpy=True, show_progress_bar=True)
+    X = X / np.linalg.norm(X, axis=1, keepdims=True)
+    return X
 
-    vectorizer = TfidfVectorizer(stop_words="english")
-    X = vectorizer.fit_transform(chunks)
-
-    return vectorizer, X, chunks
-
-
-def retrive(query, vectorizer, X, chunks):
-    q_vec = vectorizer.transform([query])
-    sims = cosine_similarity(q_vec, X).flatten()
+def retrive(query, X, chunks):
+    q = embedder.encode([query], convert_to_numpy=True)
+    q = q / np.linalg.norm(q, axis=1, keepdims=True)
+    
+    sims = np.dot(q, X.T).flatten()
 
     top_idx = np.argsort(sims)[::-1][:TOP_K]
     return [chunks[i] for i in top_idx]
@@ -50,14 +52,14 @@ def retrive(query, vectorizer, X, chunks):
 
 def ask_ollama(prompt):
     result = subprocess.run(
-        ["ollama", "run", MODEL],
+        ["ollama", "run", OLLAMA_MODEL],
         input = prompt.encode(),
         stdout = subprocess.PIPE
     )
     return result.stdout.decode()
 
-def rag(query, vectorizer, X, chunks):
-    top_chunks = retrive(query, vectorizer, X, chunks)
+def rag(query, X, chunks):
+    top_chunks = retrive(query, X, chunks)
 
     context = "\n\n".join(top_chunks)
 
@@ -74,8 +76,12 @@ if __name__ == "__main__":
     print("loading documents...")
     texts = load_docs(DATA_DIR)
 
+    chunks = []
+    for t in texts:
+        chunks.extend(chunk_text(t))
+
     print("Building Index...")
-    vectorizer, X, chunks = build_index(texts)
+    X = build_index(chunks)
 
     print("Ready. Ask Questions (type 'exit' to quit)\n")
 
@@ -84,5 +90,5 @@ if __name__ == "__main__":
         if query.lower() == "exit":
             break
 
-        answer = rag(query, vectorizer, X, chunks)
+        answer = rag(query, X, chunks)
         print(answer)
