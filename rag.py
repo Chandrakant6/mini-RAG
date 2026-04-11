@@ -1,4 +1,5 @@
 import numpy as np
+import faiss
 from sentence_transformers import SentenceTransformer
 
 import os 
@@ -14,6 +15,9 @@ ST_MODEL = "all-MiniLM-L6-v2"
 
 CHUNK_SIZE = 125
 OVERLAP = 25
+
+INDEX_FILE = "faiss.index"
+CHUNKS_FILE = "chunks.npy"
 
 
 embedder = SentenceTransformer(ST_MODEL)
@@ -39,35 +43,49 @@ def chunk_text(text):
 def build_index(chunks):
     X = embedder.encode(chunks, convert_to_numpy=True, show_progress_bar=True)
     X = X / np.linalg.norm(X, axis=1, keepdims=True)
-    return X
 
-def retrieve_mmr(query, X, chunks, top_k=TOP_K, lambda_param=0.7, top_n=TOP_N):
+    dim = X.shape[1]
+    index = faiss.IndexFlatIP(dim) # cosine via normal vector
+    index.add(X)
+
+    faiss.write_index(index,INDEX_FILE)
+    np.save(CHUNKS_FILE, np.array(chunks))
+
+    return index, chunks
+
+def load_index():
+    if os.path.exists(INDEX_FILE) and os.path.exists(CHUNKS_FILE):
+        index = faiss.read_index(INDEX_FILE)
+        chunks = np.load(CHUNKS_FILE, allow_pickle=True).tolist()
+        return index, chunks
+    return None, None
+
+def retrieve_mmr(query, index, chunks, top_k=TOP_K, top_n=10, lambda_param=0.6):
     q = embedder.encode([query], convert_to_numpy=True)
     q = q / np.linalg.norm(q, axis=1, keepdims=True)
 
-    sims = np.dot(q, X.T).flatten()
+    # Step 1: FAISS search
+    sims, idxs = index.search(q, top_n)
+    candidate_idx = idxs[0]
+    sims = sims[0]
 
-    candidate_idx = np.argsort(sims)[::-1][:top_n]
-
-    selected = []
     selected_idx = []
 
-    for _ in range(top_k):
-        if len(selected_idx) == 0:
-            idx = candidate_idx[0]
-            selected_idx.append(idx)
+    for i in range(top_k):
+        if i == 0:
+            selected_idx.append(candidate_idx[0])
             continue
 
         mmr_scores = []
-
         for idx in candidate_idx:
             if idx in selected_idx:
                 continue
 
-            relevance = sims[idx]
+            relevance = np.dot(q[0], index.reconstruct(int(idx)))
 
             diversity = max(
-                np.dot(X[idx], X[j]) for j in selected_idx
+                np.dot(index.reconstruct(int(idx)), index.reconstruct(int(j)))
+                for j in selected_idx
             )
 
             score = lambda_param * relevance - (1 - lambda_param) * diversity
@@ -90,7 +108,7 @@ def ask_ollama(prompt):
     return result.stdout.decode()
 
 def rag(query, X, chunks):
-    top_chunks = retrieve_mmr(query, X, chunks)
+    top_chunks = retrieve_mmr(query, index, chunks)
 
     context = "\n\n".join(top_chunks)
 
@@ -104,22 +122,26 @@ Question:{query}
     return ask_ollama(prompt)
 
 if __name__ == "__main__":
-    print("loading documents...")
-    texts = load_docs(DATA_DIR)
+    print("Loading index...")
 
-    chunks = []
-    for t in texts:
-        chunks.extend(chunk_text(t))
+    index, chunks = load_index()
 
-    print("Building Index...")
-    X = build_index(chunks)
+    if index is None:
+        print("Building index...")
+        texts = load_docs(DATA_DIR)
 
-    print("Ready. Ask Questions (type 'exit' to quit)\n")
+        chunks = []
+        for t in texts:
+            chunks.extend(chunk_text(t))
+
+        index, chunks = build_index(chunks)
+
+    print("Ready.\n")
 
     while True:
         query = input(">> ")
         if query.lower() == "exit":
             break
 
-        answer = rag(query, X, chunks)
+        answer = rag(query, index, chunks)
         print(answer)
