@@ -1,4 +1,4 @@
-import numpy as np 
+import numpy as np
 from sentence_transformers import SentenceTransformer
 
 import os 
@@ -7,6 +7,7 @@ import subprocess
 
 DATA_DIR = "data"
 TOP_K = 2
+TOP_N = 10
 
 OLLAMA_MODEL = "phi"
 ST_MODEL = "all-MiniLM-L6-v2"
@@ -36,19 +37,49 @@ def chunk_text(text):
     return chunks
 
 def build_index(chunks):
-    X = embedder.encode(texts, convert_to_numpy=True, show_progress_bar=True)
+    X = embedder.encode(chunks, convert_to_numpy=True, show_progress_bar=True)
     X = X / np.linalg.norm(X, axis=1, keepdims=True)
     return X
 
-def retrive(query, X, chunks):
+def retrieve_mmr(query, X, chunks, top_k=TOP_K, lambda_param=0.7, top_n=TOP_N):
     q = embedder.encode([query], convert_to_numpy=True)
     q = q / np.linalg.norm(q, axis=1, keepdims=True)
-    
+
     sims = np.dot(q, X.T).flatten()
 
-    top_idx = np.argsort(sims)[::-1][:TOP_K]
-    return [chunks[i] for i in top_idx]
+    candidate_idx = np.argsort(sims)[::-1][:top_n]
 
+    selected = []
+    selected_idx = []
+
+    for _ in range(top_k):
+        if len(selected_idx) == 0:
+            idx = candidate_idx[0]
+            selected_idx.append(idx)
+            continue
+
+        mmr_scores = []
+
+        for idx in candidate_idx:
+            if idx in selected_idx:
+                continue
+
+            relevance = sims[idx]
+
+            diversity = max(
+                np.dot(X[idx], X[j]) for j in selected_idx
+            )
+
+            score = lambda_param * relevance - (1 - lambda_param) * diversity
+            mmr_scores.append((score, idx))
+
+        if not mmr_scores:
+            break
+
+        _, best_idx = max(mmr_scores)
+        selected_idx.append(best_idx)
+
+    return [chunks[i] for i in selected_idx]
 
 def ask_ollama(prompt):
     result = subprocess.run(
@@ -59,7 +90,7 @@ def ask_ollama(prompt):
     return result.stdout.decode()
 
 def rag(query, X, chunks):
-    top_chunks = retrive(query, X, chunks)
+    top_chunks = retrieve_mmr(query, X, chunks)
 
     context = "\n\n".join(top_chunks)
 
