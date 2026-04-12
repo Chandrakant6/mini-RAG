@@ -5,6 +5,7 @@ click==8.3.2
 cuda-bindings==13.2.0
 cuda-pathfinder==1.5.1
 cuda-toolkit==13.0.2
+faiss-cpu==1.13.2
 filelock==3.25.2
 fsspec==2026.3.0
 h11==0.16.0
