@@ -13,11 +13,22 @@ A minimal Retrieval-Augmented Generation (RAG) system with:
 - Diversity-aware retrieval (MMR)
 - Simple, hackable codebase
 
-## Architecture
+## whats new
+### persistent vector storage
+- Embedding and index saved to disk
+- no recomputation on restart
+
+### faster startup
+- load prebuilt index in miliseconds
+
+### scalable retrieval
+- handles large data effenciently
+
+## Architecture (updated)
 ```
-Documents → Chunking → Embeddings → Vector Index
-                                      ↓
-Query → Embedding → MMR Retrieval → Context → LLM → Answer
+Documents → Chunk → Embed → FAISS Index (saved to disk)
+                                         ↓
+Startup → Load Index → Query → MMR → LLM → Answer
 ```
 
 ## Components
@@ -49,7 +60,7 @@ Context-grounded answers only
 ## Setup
 
 ### 1. Install dependencies
-```pip install sentence-transformers numpy```
+```pip install sentence-transformers faiss-cpu numpy```
 
 ### 2. Install Ollama
 Install Ollama
@@ -89,20 +100,12 @@ It does:
 Top-N → MMR → diverse + relevant
 
 ### Example Flow
-Query: ```What is overfitting?```
-
-- Embedding
-- Retrieve top 10 chunks
-- Apply MMR
-- Select 2 diverse chunks
-- Send to LLM
-- Generate grounded answer
-
-### Limitations
-- No persistent vector DB (in-memory only)
-- Basic chunking (word-based)
-- No metadata filtering
-- No reranking beyond MMR
+- Query
+- Embed
+- FAISS (top-N)
+- MMR rerank
+- Top-K chunks
+- LLM
 
 📜 License
 
