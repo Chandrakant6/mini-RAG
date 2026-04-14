@@ -39,6 +39,7 @@ nvidia-nvshmem-cu13==3.4.5
 nvidia-nvtx==13.0.85
 packaging==26.0
 Pygments==2.20.0
+pypdf==6.10.0
 PyYAML==6.0.3
 regex==2026.4.4
 rich==14.3.3

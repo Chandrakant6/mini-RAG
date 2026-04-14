@@ -1,6 +1,7 @@
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
+from pypdf import PdfReader
 
 import os 
 import subprocess
@@ -24,10 +25,31 @@ embedder = SentenceTransformer(ST_MODEL)
 
 def load_docs(data_dir):
     texts = []
+
     for file in os.listdir(data_dir):
+        path = os.path.join(data_dir, file)
+
+        # TXT / MD
         if file.endswith(".txt") or file.endswith(".md"):
-            with open(os.path.join(data_dir, file), "r", encoding="utf-8") as f:
+            with open(path, "r", encoding="utf-8") as f:
                 texts.append(f.read())
+
+        # PDF
+        elif file.endswith(".pdf"):
+            try:
+                reader = PdfReader(path)
+                pdf_text = []
+
+                for page in reader.pages:
+                    text = page.extract_text()
+                    if text:
+                        pdf_text.append(text)
+
+                texts.append("\n".join(pdf_text))
+
+            except Exception as e:
+                print(f"Error reading {file}: {e}")
+
     return texts
 
 def chunk_text(text):

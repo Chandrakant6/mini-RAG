@@ -12,19 +12,16 @@ A minimal Retrieval-Augmented Generation (RAG) system with:
 - Lightweight (CPU-friendly)
 - Diversity-aware retrieval (MMR)
 - Simple, hackable codebase
-
-## whats new
-### persistent vector storage
+- persistent vector storage
 - Embedding and index saved to disk
 - no recomputation on restart
-
-### faster startup
+- faster startup
 - load prebuilt index in miliseconds
-
-### scalable retrieval
+- scalable retrieval
 - handles large data effenciently
+- pdf support
 
-## Architecture (updated)
+## Architecture
 ```
 Documents → Chunk → Embed → FAISS Index (saved to disk)
                                          ↓
@@ -33,34 +30,27 @@ Startup → Load Index → Query → MMR → LLM → Answer
 
 ## Components
 
-1. Document Loader
-Reads `.txt` and `.md` files from `data/`
+### 1. Document Loader
+Reads `.txt`, `.md` and `.pdf` files from `data/`
 
-2. Chunking
+### 2. Chunking
 Fixed-size word chunks
 Overlap to preserve context
 
-3. 🔢 Embeddings
+### 3. 🔢 Embeddings
 Model: `all-MiniLM-L6-v2`
 Normalized vectors for cosine similarity
 
-4. 🎯 Retrieval (MMR)
+### 4. 🎯 Retrieval (MMR)
+Balances: Relevance and Diversity
 
-Balances:
-```
-Relevance
-Diversity
-```
-
-5. Generation
-
+### 5. Generation
 Uses `ollama run phi`
 Context-grounded answers only
 
 ## Setup
-
 ### 1. Install dependencies
-```pip install sentence-transformers faiss-cpu numpy```
+```pip install sentence-transformers faiss-cpu pypdf numpy```
 
 ### 2. Install Ollama
 Install Ollama
@@ -73,6 +63,7 @@ project/
  ├── data/
  │    ├── doc1.txt
  │    ├── notes.md
+ │    ├── sample.pdf
 ```
 
 ### 4. Run
