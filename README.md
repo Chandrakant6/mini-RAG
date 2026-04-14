@@ -21,11 +21,20 @@ A minimal Retrieval-Augmented Generation (RAG) system with:
 - handles large data effenciently
 - pdf support
 
+## whats new 
+make RAG adaptive by updating the FAISS database when data updates- 
+- new file is added to `data` dir
+- a file is removed from `data` dir
+
+
 ## Architecture
 ```
-Documents → Chunk → Embed → FAISS Index (saved to disk)
-                                         ↓
-Startup → Load Index → Query → MMR → LLM → Answer
+data/ → hash check
+       ↓
+(no change) → load index
+(change)    → rebuild index
+
+Query → FAISS → MMR → LLM
 ```
 
 ## Components
@@ -37,11 +46,11 @@ Reads `.txt`, `.md` and `.pdf` files from `data/`
 Fixed-size word chunks
 Overlap to preserve context
 
-### 3. 🔢 Embeddings
+### 3. Embeddings
 Model: `all-MiniLM-L6-v2`
 Normalized vectors for cosine similarity
 
-### 4. 🎯 Retrieval (MMR)
+### 4. Retrieval (MMR)
 Balances: Relevance and Diversity
 
 ### 5. Generation
@@ -78,16 +87,12 @@ python rag.py
 >> exit
 ```
 
-## 🧠 MMR Explained
+## MMR Explained
 
 MMR improves retrieval by avoiding redundant chunks.
-
 Instead of:
-
 Top-K → similar but repetitive
-
 It does:
-
 Top-N → MMR → diverse + relevant
 
 ### Example Flow
@@ -98,6 +103,5 @@ Top-N → MMR → diverse + relevant
 - Top-K chunks
 - LLM
 
-📜 License
-
+## 📜 License
 MIT

@@ -1,6 +1,8 @@
 .venv/
 
 data/
+storage/
 
 chunks.npy
+embeddings.npy
 faiss.index
