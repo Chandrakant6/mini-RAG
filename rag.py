@@ -1,12 +1,14 @@
+import os
+import re
+import json
+import hashlib
+import urllib.request
+import urllib.error
+
 import numpy as np
 import faiss
 from sentence_transformers import SentenceTransformer
 from pypdf import PdfReader
-
-import os 
-import subprocess
-import json
-import hashlib
 
 
 DATA_DIR = "data"
@@ -20,177 +22,185 @@ CHUNK_SIZE = 125
 OVERLAP = 25
 
 INDEX_FILE = "faiss.index"
-CHUNKS_FILE = "chunks.npy"
-
+CHUNKS_FILE = "chunks.json"
 META_FILE = "storage/meta.json"
-EMBED_FILE = "embeddings.npy"
 
-
-embedder = SentenceTransformer(ST_MODEL)
 
 def load_docs(data_dir):
-    texts = []
-
-    for file in os.listdir(data_dir):
+    """Load supported documents from data_dir with source metadata."""
+    docs = []
+    for file in sorted(os.listdir(data_dir)):
         path = os.path.join(data_dir, file)
+        if not os.path.isfile(path):
+            continue
 
-        # TXT / MD
-        if file.endswith(".txt") or file.endswith(".md"):
+        if file.endswith((".txt", ".md")):
             with open(path, "r", encoding="utf-8") as f:
-                texts.append(f.read())
+                docs.append({"text": f.read(), "source": file, "page": None})
 
-        # PDF
         elif file.endswith(".pdf"):
             try:
                 reader = PdfReader(path)
-                pdf_text = []
-
-                for page in reader.pages:
+                for i, page in enumerate(reader.pages):
                     text = page.extract_text()
                     if text:
-                        pdf_text.append(text)
-
-                texts.append("\n".join(pdf_text))
-
+                        docs.append({"text": text, "source": file, "page": i + 1})
             except Exception as e:
                 print(f"Error reading {file}: {e}")
 
-    return texts
+    return docs
 
-def chunk_text(text):
-    words = text.split()
+
+def chunk_docs(docs, chunk_size=CHUNK_SIZE, overlap=OVERLAP):
+    """Sentence-aware chunking with word-budget overlap."""
     chunks = []
-    i = 0
-    while i < len(words):
-        chunk = words[i:i+CHUNK_SIZE]
-        chunks.append(" ".join(chunk))
-        i += CHUNK_SIZE - OVERLAP
+    for doc in docs:
+        sentences = re.split(r"(?<=[.!?])\s+", doc["text"])
+        sentences = [s.strip() for s in sentences if s.strip()]
+
+        i = 0
+        while i < len(sentences):
+            chunk_sentences = []
+            words = 0
+            j = i
+            while j < len(sentences) and words < chunk_size:
+                chunk_sentences.append(sentences[j])
+                words += len(sentences[j].split())
+                j += 1
+
+            if not chunk_sentences:
+                break
+
+            chunks.append({
+                "text": " ".join(chunk_sentences),
+                "source": doc["source"],
+                "page": doc["page"],
+            })
+
+            # step back for overlap (guaranteed progress)
+            overlap_words = 0
+            overlap_count = 0
+            for s in reversed(chunk_sentences):
+                if overlap_words >= overlap:
+                    break
+                overlap_words += len(s.split())
+                overlap_count += 1
+
+            i = max(j - overlap_count, i + 1)
+
     return chunks
 
-def build_index(chunks):
-    X = embedder.encode(chunks, convert_to_numpy=True, show_progress_bar=True)
-    X = X / np.linalg.norm(X, axis=1, keepdims=True)
-
-    dim = X.shape[1]
-    index = faiss.IndexFlatIP(dim) # cosine via normal vector
-    index.add(X)
-
-    faiss.write_index(index,INDEX_FILE)
-    np.save(CHUNKS_FILE, np.array(chunks))
-
-    return index, chunks
-
-def load_index():
-    if os.path.exists(INDEX_FILE) and os.path.exists(CHUNKS_FILE):
-        index = faiss.read_index(INDEX_FILE)
-        chunks = np.load(CHUNKS_FILE, allow_pickle=True).tolist()
-        return index, chunks
-    return None, None
 
 def compute_data_hash(data_dir):
+    """Content-addressable hash of supported files in data_dir."""
     hash_md5 = hashlib.md5()
-
     for file in sorted(os.listdir(data_dir)):
         path = os.path.join(data_dir, file)
-
-        if not (file.endswith(".txt") or file.endswith(".md") or file.endswith(".pdf")):
+        if not os.path.isfile(path):
             continue
-
+        if not file.endswith((".txt", ".md", ".pdf")):
+            continue
         hash_md5.update(file.encode())
-
         with open(path, "rb") as f:
             while chunk := f.read(4096):
                 hash_md5.update(chunk)
-
     return hash_md5.hexdigest()
 
+
 def save_meta(data_hash):
+    os.makedirs(os.path.dirname(META_FILE), exist_ok=True)
     temp_file = META_FILE + ".tmp"
-
-    with open(temp_file, "w") as f:
+    with open(temp_file, "w", encoding="utf-8") as f:
         json.dump({"data_hash": data_hash}, f)
+    os.replace(temp_file, META_FILE)
 
-    os.replace(temp_file, META_FILE)  # atomic write
 
 def load_meta():
     if not os.path.exists(META_FILE):
         return None
-
     try:
-        with open(META_FILE, "r") as f:
+        with open(META_FILE, "r", encoding="utf-8") as f:
             return json.load(f).get("data_hash")
     except Exception:
-        return None  # treat as no meta → rebuild
+        return None
 
-def load_or_build(data_dir):
+
+def load_or_build(data_dir, embedder):
+    """Load cached index or rebuild if data changed."""
     current_hash = compute_data_hash(data_dir)
     saved_hash = load_meta()
 
     if (
         os.path.exists(INDEX_FILE)
         and os.path.exists(CHUNKS_FILE)
-        and os.path.exists(EMBED_FILE)
         and current_hash == saved_hash
     ):
         print("Loading existing index...")
-
         index = faiss.read_index(INDEX_FILE)
-        chunks = np.load(CHUNKS_FILE, allow_pickle=True).tolist()
-        embeddings = np.load(EMBED_FILE)
-
-        return index, chunks, embeddings
+        with open(CHUNKS_FILE, "r", encoding="utf-8") as f:
+            chunks = json.load(f)
+        return index, chunks
 
     print("Data changed → rebuilding index...")
+    docs = load_docs(data_dir)
 
-    texts = load_docs(data_dir)
+    if not docs:
+        print(f"Warning: no supported documents found in '{data_dir}'.")
+        dim = embedder.get_sentence_embedding_dimension()
+        index = faiss.IndexFlatIP(dim)
+        return index, []
 
-    chunks = []
-    for t in texts:
-        chunks.extend(chunk_text(t))
+    chunks = chunk_docs(docs)
+    texts = [c["text"] for c in chunks]
 
-    X = embedder.encode(chunks, convert_to_numpy=True)
+    X = embedder.encode(texts, convert_to_numpy=True, show_progress_bar=True)
     X = X / np.linalg.norm(X, axis=1, keepdims=True)
 
-    index = faiss.IndexFlatIP(X.shape[1])
+    dim = X.shape[1]
+    index = faiss.IndexFlatIP(dim)
     index.add(X)
 
-    # Save
     faiss.write_index(index, INDEX_FILE)
-    np.save(CHUNKS_FILE, np.array(chunks))
-    np.save(EMBED_FILE, X)
+    with open(CHUNKS_FILE, "w", encoding="utf-8") as f:
+        json.dump(chunks, f, ensure_ascii=False, indent=2)
     save_meta(current_hash)
 
-    return index, chunks, X
+    return index, chunks
 
-def retrieve_mmr(query, index, chunks, embeddings, top_k=TOP_K, top_n=TOP_N, lambda_param=0.6):
+
+def retrieve_mmr(query, index, chunks, embedder, top_k=TOP_K, top_n=TOP_N, lambda_param=0.6):
+    """Retrieve top_k chunks using Maximal Marginal Relevance."""
+    if not chunks:
+        return []
+
     q = embedder.encode([query], convert_to_numpy=True)
     q = q / np.linalg.norm(q, axis=1, keepdims=True)
 
     sims, idxs = index.search(q, top_n)
-    candidate_idx = idxs[0]
+    candidate_idx = [int(i) for i in idxs[0] if int(i) >= 0]
+
+    if not candidate_idx:
+        return []
+
+    # Pre-fetch embeddings for candidate docs from FAISS
+    candidate_embeds = {idx: index.reconstruct(idx) for idx in candidate_idx}
 
     selected_idx = []
-
     for i in range(top_k):
         if i == 0:
             selected_idx.append(candidate_idx[0])
             continue
 
         mmr_scores = []
-
         for idx in candidate_idx:
             if idx in selected_idx:
                 continue
-
-            doc_vec = embeddings[idx]
-
+            doc_vec = candidate_embeds[idx]
             relevance = np.dot(q[0], doc_vec)
-
             diversity = max(
-                np.dot(doc_vec, embeddings[j])
+                np.dot(doc_vec, candidate_embeds[j])
                 for j in selected_idx
             )
-
             score = lambda_param * relevance - (1 - lambda_param) * diversity
             mmr_scores.append((score, idx))
 
@@ -202,40 +212,82 @@ def retrieve_mmr(query, index, chunks, embeddings, top_k=TOP_K, top_n=TOP_N, lam
 
     return [chunks[i] for i in selected_idx]
 
+
 def ask_ollama(prompt):
-    result = subprocess.run(
-        ["ollama", "run", OLLAMA_MODEL],
-        input = prompt.encode(),
-        stdout = subprocess.PIPE
+    """Call Ollama via local HTTP API (keeps model warm, no per-query subprocess)."""
+    payload = json.dumps({
+        "model": OLLAMA_MODEL,
+        "prompt": prompt,
+        "stream": False,
+    }).encode("utf-8")
+
+    req = urllib.request.Request(
+        "http://localhost:11434/api/generate",
+        data=payload,
+        headers={"Content-Type": "application/json"},
+        method="POST",
     )
-    return result.stdout.decode()
 
-def rag(query, index, chunks, embeddings):
-    top_chunks = retrieve_mmr(query, index, chunks, embeddings)
+    try:
+        with urllib.request.urlopen(req, timeout=300) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            return data.get("response", "").strip()
+    except urllib.error.URLError as e:
+        return f"[Error: Cannot reach Ollama at localhost:11434. Is it running? ({e})]"
+    except Exception as e:
+        return f"[Error: {e}]"
 
-    context = "\n\n".join(top_chunks)
 
-    prompt = f"""
-Answer ONLY from the context. If not found, say "Not in context".
+def rag(query, index, chunks, embedder):
+    top_chunks = retrieve_mmr(query, index, chunks, embedder)
 
-context:{context}
+    if not top_chunks:
+        return "No relevant context found."
 
-Question:{query}
-    """
+    context_parts = []
+    for c in top_chunks:
+        source = c["source"]
+        page_info = f" (page {c['page']})" if c["page"] else ""
+        context_parts.append(f"[Source: {source}{page_info}]\n{c['text']}")
+
+    context = "\n\n".join(context_parts)
+
+    prompt = f"""Answer ONLY from the context below. If the answer is not found, say "Not in context".
+
+{context}
+
+Question: {query}
+"""
     return ask_ollama(prompt)
 
 
 if __name__ == "__main__":
     print("Loading system...")
 
-    index, chunks, embeddings = load_or_build(DATA_DIR)
+    embedder = SentenceTransformer(ST_MODEL)
 
-    print("Ready.\n")
+    if not os.path.isdir(DATA_DIR):
+        print(f"Error: data directory '{DATA_DIR}' not found.")
+        exit(1)
+
+    index, chunks = load_or_build(DATA_DIR, embedder)
+
+    if not chunks:
+        print("Warning: index is empty. Add documents to 'data/' and restart.")
+
+    print(f"Indexed {len(chunks)} chunks. Ready.\n")
 
     while True:
-        query = input(">> ")
-        if query.lower() == "exit":
+        try:
+            query = input(">>")
+        except (EOFError, KeyboardInterrupt):
+            print("\nExiting.")
             break
 
-        answer = rag(query, index, chunks, embeddings)
+        if query.lower().strip() == "exit":
+            break
+        if not query.strip():
+            continue
+
+        answer = rag(query, index, chunks, embedder)
         print(answer)
